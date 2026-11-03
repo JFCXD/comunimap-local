@@ -1,0 +1,1523 @@
+package com.example.comunimap.screens
+
+import android.content.Context
+import android.net.Uri
+import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddLocationAlt
+import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import coil.compose.AsyncImage
+import com.example.R
+import com.example.comunimap.api.ApiClient
+import com.example.comunimap.api.LaravelApiClient
+import com.example.comunimap.components.SeccionEvidenciaFotografica
+import com.example.comunimap.models.Categoria
+import com.example.comunimap.models.CrearReporteRequest
+import com.example.comunimap.models.Reporte
+import com.example.comunimap.models.Usuario
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
+import java.io.File
+import java.io.FileOutputStream
+import kotlinx.coroutines.launch
+import org.osmdroid.config.Configuration
+import org.osmdroid.events.MapEventsReceiver
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.CustomZoomButtonsController
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.MapEventsOverlay
+import org.osmdroid.views.overlay.Marker
+
+// =====================================================
+// PANTALLA: MAPA REAL (OPENSTREETMAP / OSMDROID)
+// =====================================================
+
+// Coordenadas iniciales centradas en Cochabamba, Bolivia
+private const val COCHABAMBA_LAT = -17.3895
+private const val COCHABAMBA_LNG = -66.1568
+private const val DEFAULT_ZOOM = 13.0
+
+// Colores del tema visual navy
+private val DarkNavyBg = Color(0xFF0B132B)
+private val DarkCardBg = Color(0xFF162238)
+private val AccentBlue = Color(0xFF3B82F6)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MapaScreen(
+    usuarioActual: Usuario? = null,
+    esAdministrador: Boolean = false
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var reportes by remember { mutableStateOf<List<Reporte>>(emptyList()) }
+    var categorias by remember { mutableStateOf<List<Categoria>>(emptyList()) }
+
+    // Estados para el reporte seleccionado al tocar un marcador existente
+    var reporteSeleccionado by remember { mutableStateOf<Reporte?>(null) }
+
+    // =====================================================
+    // ESTADOS DEL FLUJO DE CREACIÓN DE REPORTES
+    // =====================================================
+    var modoSeleccionUbicacion by remember { mutableStateOf(false) }
+    var puntoTemporal by remember { mutableStateOf<GeoPoint?>(null) }
+    var mostrarFormularioCrear by remember { mutableStateOf(false) }
+
+    // Referencia al MapView
+    var mapViewInstance by remember { mutableStateOf<MapView?>(null) }
+
+    // En el mapa se muestran TODOS los reportes de la comunidad para todos los usuarios
+    val reportesVisibles = reportes
+
+    // Consulta de los reportes y categorías reales para el mapa
+    suspend fun cargarDatos() {
+        isLoading = true
+        errorMessage = null
+        try {
+            // 1. Cargar reportes para marcadores en tiempo real
+            val resp = ApiClient.apiService.obtenerReportes()
+            Log.d("REPORTES_HTTP", "HTTP: ${resp.code()}")
+            if (resp.isSuccessful && resp.body()?.success == true) {
+                reportes = resp.body()?.reportes ?: emptyList()
+                Log.d("REPORTES_RESPONSE", "Cargados ${reportes.size} reportes en el mapa")
+                actualizarMarcadoresEnMapa(
+                    context = context,
+                    mapView = mapViewInstance,
+                    reportes = reportesVisibles,
+                    puntoTemporal = puntoTemporal,
+                    modoSeleccion = modoSeleccionUbicacion,
+                    onReporteClick = { rep ->
+                        if (!modoSeleccionUbicacion) {
+                            reporteSeleccionado = rep
+                        }
+                    }
+                )
+            } else {
+                errorMessage = "No se pudieron obtener los reportes del mapa."
+            }
+
+            // 2. Cargar categorías para el formulario
+            val respCat = ApiClient.apiService.obtenerCategorias()
+            if (respCat.isSuccessful && respCat.body()?.success == true) {
+                categorias = respCat.body()?.categorias ?: emptyList()
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (ex: Exception) {
+            Log.e("REPORTES_ERROR", "Error cargando marcadores del mapa", ex)
+            errorMessage = "No se pudo conectar con el servidor."
+        } finally {
+            isLoading = false
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        cargarDatos()
+    }
+
+    // Efecto para redibujar marcadores cuando cambian puntoTemporal, modoSeleccionUbicacion o reportesVisibles
+    LaunchedEffect(puntoTemporal, modoSeleccionUbicacion, reportesVisibles) {
+        actualizarMarcadoresEnMapa(
+            context = context,
+            mapView = mapViewInstance,
+            reportes = reportesVisibles,
+            puntoTemporal = puntoTemporal,
+            modoSeleccion = modoSeleccionUbicacion,
+            onReporteClick = { rep ->
+                if (!modoSeleccionUbicacion) {
+                    reporteSeleccionado = rep
+                }
+            }
+        )
+    }
+
+    Scaffold(
+        containerColor = DarkNavyBg,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            text = if (modoSeleccionUbicacion) {
+                                "Selecciona Ubicación"
+                            } else {
+                                "Mapa de Reportes"
+                            },
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = if (modoSeleccionUbicacion) {
+                                "Toca el mapa para ubicar el incidente"
+                            } else {
+                                "Incidentes comunitarios • Cochabamba"
+                            },
+                            fontSize = 11.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                },
+                actions = {
+                    if (modoSeleccionUbicacion) {
+                        // Botón para salir del modo selección
+                        TextButton(
+                            onClick = {
+                                modoSeleccionUbicacion = false
+                                puntoTemporal = null
+                            }
+                        ) {
+                            Text("Cancelar", color = Color(0xFFF87171), fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        IconButton(
+                            onClick = { coroutineScope.launch { cargarDatos() } },
+                            enabled = !isLoading,
+                            modifier = Modifier.testTag("mapa_refresh_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Recargar mapa",
+                                tint = Color(0xFF60A5FA)
+                            )
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = DarkNavyBg,
+                    titleContentColor = Color.White
+                )
+            )
+        },
+        floatingActionButton = {
+            // Controles flotantes en la esquina inferior derecha:
+            // 1. Botón circular para centrar mapa
+            // 2. Separación visual clara
+            // 3. Botón principal "Crear reporte"
+            // 4. Margen inferior suficiente respecto a la barra inferior de navegación
+            if (!modoSeleccionUbicacion) {
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    modifier = Modifier.padding(bottom = 16.dp, end = 4.dp)
+                ) {
+                    // Botón circular para centrar mapa
+                    FloatingActionButton(
+                        onClick = {
+                            mapViewInstance?.controller?.animateTo(GeoPoint(COCHABAMBA_LAT, COCHABAMBA_LNG))
+                            mapViewInstance?.controller?.setZoom(DEFAULT_ZOOM)
+                        },
+                        shape = CircleShape,
+                        containerColor = Color(0xFF1E293B),
+                        contentColor = Color(0xFF60A5FA),
+                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
+                        modifier = Modifier
+                            .size(50.dp)
+                            .testTag("mapa_center_fab")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MyLocation,
+                            contentDescription = "Centrar en Cochabamba",
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Botón principal y ÚNICO para crear reporte
+                    ExtendedFloatingActionButton(
+                        onClick = {
+                            modoSeleccionUbicacion = true
+                            puntoTemporal = null
+                            reporteSeleccionado = null
+                        },
+                        containerColor = AccentBlue,
+                        contentColor = Color.White,
+                        shape = RoundedCornerShape(16.dp),
+                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
+                        icon = {
+                            Icon(
+                                imageVector = Icons.Default.AddLocationAlt,
+                                contentDescription = null,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        },
+                        text = {
+                            Text(
+                                text = "Crear reporte",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp
+                            )
+                        },
+                        modifier = Modifier.testTag("btn_crear_reporte_fab")
+                    )
+                }
+            }
+        }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            // =====================================================
+            // MAPA DE OPENSTREETMAP (OSMDROID)
+            // =====================================================
+            AndroidView(
+                factory = { ctx ->
+                    Configuration.getInstance().userAgentValue = ctx.packageName
+                    MapView(ctx).apply {
+                        setTileSource(TileSourceFactory.MAPNIK)
+                        setMultiTouchControls(true)
+                        // Ocultar los botones de zoom legacy de osmdroid en la esquina inferior
+                        // para evitar amontonamiento con el botón Crear reporte
+                        zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
+                        controller.setZoom(DEFAULT_ZOOM)
+                        controller.setCenter(GeoPoint(COCHABAMBA_LAT, COCHABAMBA_LNG))
+
+                        // Evento de toque en el mapa
+                        val receiver = object : MapEventsReceiver {
+                            override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
+                                if (modoSeleccionUbicacion) {
+                                    // Guardar coordenadas y fijar punto temporal
+                                    puntoTemporal = p
+                                    return true
+                                }
+                                return false
+                            }
+
+                            override fun longPressHelper(p: GeoPoint): Boolean = false
+                        }
+                        overlays.add(MapEventsOverlay(receiver))
+
+                        mapViewInstance = this
+                    }
+                },
+                update = { mapView ->
+                    actualizarMarcadoresEnMapa(
+                        context = context,
+                        mapView = mapView,
+                        reportes = reportesVisibles,
+                        puntoTemporal = puntoTemporal,
+                        modoSeleccion = modoSeleccionUbicacion,
+                        onReporteClick = { rep ->
+                            if (!modoSeleccionUbicacion) {
+                                reporteSeleccionado = rep
+                            }
+                        }
+                    )
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("osm_map_view")
+            )
+
+            // =====================================================
+            // CONTROLES DE ZOOM (+ / -) EN LA ESQUINA SUPERIOR IZQUIERDA
+            // =====================================================
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 16.dp, top = if (modoSeleccionUbicacion) 80.dp else 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Botón Zoom +
+                FloatingActionButton(
+                    onClick = { mapViewInstance?.controller?.zoomIn() },
+                    shape = RoundedCornerShape(10.dp),
+                    containerColor = Color(0xF01E293B),
+                    contentColor = Color.White,
+                    elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 4.dp),
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Acercar",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                // Botón Zoom -
+                FloatingActionButton(
+                    onClick = { mapViewInstance?.controller?.zoomOut() },
+                    shape = RoundedCornerShape(10.dp),
+                    containerColor = Color(0xF01E293B),
+                    contentColor = Color.White,
+                    elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 4.dp),
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Remove,
+                        contentDescription = "Alejar",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            // =====================================================
+            // BANNER SUPERIOR EN MODO SELECCIÓN
+            // =====================================================
+            if (modoSeleccionUbicacion) {
+                Card(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(16.dp)
+                        .fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xF0162238)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF1E3A8A)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.TouchApp,
+                                contentDescription = null,
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Modo Crear Reporte",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color.White
+                            )
+                            Text(
+                                text = if (puntoTemporal == null)
+                                    "Toca el mapa para seleccionar la ubicación del reporte"
+                                else
+                                    "Ubicación seleccionada. Toca otro punto si deseas cambiarla.",
+                                fontSize = 12.sp,
+                                color = Color(0xFF94A3B8)
+                            )
+                        }
+                        if (puntoTemporal == null) {
+                            IconButton(onClick = {
+                                modoSeleccionUbicacion = false
+                                puntoTemporal = null
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Cancelar",
+                                    tint = Color(0xFF94A3B8)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Indicador de carga
+            if (isLoading) {
+                Card(
+                    modifier = Modifier
+                        .align(if (modoSeleccionUbicacion) Alignment.Center else Alignment.TopCenter)
+                        .padding(16.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkCardBg)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = Color(0xFF60A5FA),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Actualizando reportes...",
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+
+            // =====================================================
+            // DETALLE DE REPORTE EXISTENTE (AL TOCAR UN PIN)
+            // =====================================================
+            reporteSeleccionado?.let { reporte ->
+                Card(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                        .testTag("mapa_reporte_info_card"),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkCardBg),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 420.dp)
+                            .padding(16.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = reporte.titulo,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = { reporteSeleccionado = null }) {
+                                Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = Color(0xFF94A3B8))
+                            }
+                        }
+
+                        // Estado con color distintivo (Rojo, Amarillo, Verde)
+                        val colorEstado = when (reporte.estado.trim().lowercase()) {
+                            "pendiente" -> Color(0xFFEF4444)     // Rojo
+                            "en proceso" -> Color(0xFFF59E0B)    // Amarillo
+                            "solucionado" -> Color(0xFF10B981)   // Verde
+                            else -> Color(0xFF38BDF8)
+                        }
+
+                        val esReportePropio = usuarioActual?.idUsuario != null &&
+                            reporte.idUsuario != null &&
+                            reporte.idUsuario.trim() == usuarioActual.idUsuario.trim()
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(colorEstado)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = reporte.estado,
+                                fontWeight = FontWeight.Bold,
+                                color = colorEstado,
+                                fontSize = 12.sp
+                            )
+
+                            if (esReportePropio) {
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color(0xFF0284C7).copy(alpha = 0.25f))
+                                        .border(BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f)), RoundedCornerShape(6.dp))
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "Tu reporte",
+                                        color = Color(0xFF38BDF8),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = reporte.descripcion,
+                            color = Color(0xFFCBD5E1),
+                            fontSize = 13.sp,
+                            maxLines = 3
+                        )
+
+                        if (!reporte.direccion.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.LocationOn,
+                                    contentDescription = null,
+                                    tint = Color(0xFF38BDF8),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = reporte.direccion,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                        }
+
+                        if (!reporte.categoria.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Categoría: ${reporte.categoria}",
+                                fontSize = 12.sp,
+                                color = Color(0xFF60A5FA),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        // Evidencia fotográfica si el reporte contiene imagen
+                        if (!reporte.imagen.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            SeccionEvidenciaFotografica(
+                                rutaImagen = reporte.imagen,
+                                altura = 150.dp,
+                                tituloColor = Color.White
+                            )
+                        }
+                    }
+                }
+            }
+
+            // =====================================================
+            // TARJETA TRAS TOCAR EL MAPA: "UBICACIÓN SELECCIONADA"
+            // CON DOS ACCIONES CLARAS: CONTINUAR / CANCELAR
+            // =====================================================
+            if (modoSeleccionUbicacion && puntoTemporal != null) {
+                val p = puntoTemporal!!
+                val latStr = String.format(java.util.Locale.US, "%.6f", p.latitude)
+                val lngStr = String.format(java.util.Locale.US, "%.6f", p.longitude)
+                val coordenadasTexto = "$latStr, $lngStr"
+
+                Card(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                        .testTag("tarjeta_punto_temporal"),
+                    shape = RoundedCornerShape(22.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkCardBg),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF1E3A8A)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.LocationOn,
+                                    contentDescription = null,
+                                    tint = Color(0xFF60A5FA),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "Ubicación seleccionada",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "Coordenadas: $coordenadasTexto",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Fila con las dos acciones claras: Cancelar y Continuar
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            // Acción 1: Cancelar
+                            OutlinedButton(
+                                onClick = {
+                                    modoSeleccionUbicacion = false
+                                    puntoTemporal = null
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("btn_cancelar_seleccion")
+                            ) {
+                                Text(
+                                    text = "Cancelar",
+                                    color = Color(0xFFCBD5E1),
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+
+                            // Acción 2: Continuar con el reporte
+                            Button(
+                                onClick = {
+                                    mostrarFormularioCrear = true
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .weight(1.3f)
+                                    .height(48.dp)
+                                    .testTag("btn_continuar_reporte")
+                            ) {
+                                Text(
+                                    text = "Continuar",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Icon(
+                                    imageVector = Icons.Default.ArrowForward,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // =====================================================
+    // FORMULARIO MODAL DE CREACIÓN DE REPORTE
+    // =====================================================
+    if (mostrarFormularioCrear && puntoTemporal != null) {
+        val p = puntoTemporal!!
+        val latStr = String.format(java.util.Locale.US, "%.6f", p.latitude)
+        val lngStr = String.format(java.util.Locale.US, "%.6f", p.longitude)
+        val ubicacionFija = "$latStr,$lngStr"
+
+        FormularioCrearReporteDialog(
+            ubicacion = ubicacionFija,
+            categorias = categorias,
+            usuarioActual = usuarioActual,
+            onDismiss = {
+                mostrarFormularioCrear = false
+            },
+            onReporteCreado = {
+                // Al guardar exitosamente: salir del modo selección, limpiar punto y refrescar marcadores
+                modoSeleccionUbicacion = false
+                puntoTemporal = null
+                mostrarFormularioCrear = false
+                coroutineScope.launch {
+                    cargarDatos()
+                    snackbarHostState.showSnackbar("Reporte creado con éxito en el mapa")
+                }
+            }
+        )
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            mapViewInstance?.onDetach()
+        }
+    }
+}
+
+// Diálogo modal exclusivo para registrar el reporte con coordenadas fijas y usuario en sesión
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FormularioCrearReporteDialog(
+    ubicacion: String,
+    categorias: List<Categoria>,
+    usuarioActual: Usuario?,
+    onDismiss: () -> Unit,
+    onReporteCreado: () -> Unit
+) {
+    val context = LocalContext.current
+    var titulo by remember { mutableStateOf("") }
+    var descripcion by remember { mutableStateOf("") }
+    var direccion by remember { mutableStateOf("") }
+    var selectedCategoriaId by remember { mutableStateOf<String?>(categorias.firstOrNull()?.idCategoria) }
+
+    // Actualizar categoría seleccionada si las categorías terminan de cargar posteriormente
+    LaunchedEffect(categorias) {
+        if (selectedCategoriaId == null && categorias.isNotEmpty()) {
+            selectedCategoriaId = categorias.firstOrNull()?.idCategoria
+        }
+    }
+
+    var isSubmitting by remember { mutableStateOf(false) }
+    var formError by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+
+    var imagenSeleccionada by remember { mutableStateOf<Uri?>(null) }
+    var uriFotoCamara by remember { mutableStateOf<Uri?>(null) }
+    var mostrarDialogoOrigenFoto by remember { mutableStateOf(false) }
+
+    // Launcher para capturar fotografía desde la cámara
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { exito: Boolean ->
+        if (exito && uriFotoCamara != null) {
+            imagenSeleccionada = uriFotoCamara
+        }
+    }
+
+    // Launcher para elegir imagen de la galería
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            imagenSeleccionada = uri
+        }
+    }
+
+    fun prepararCapturaFoto() {
+        try {
+            val archivoFoto = File(context.cacheDir, "foto_reporte_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                archivoFoto
+            )
+            uriFotoCamara = uri
+            takePictureLauncher.launch(uri)
+        } catch (e: Exception) {
+            Log.e("CAMERA_ERROR", "Error creando archivo para la cámara", e)
+            formError = "No se pudo abrir la cámara. Inténtalo nuevamente."
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = {
+            if (!isSubmitting) {
+                imagenSeleccionada = null
+                uriFotoCamara = null
+                onDismiss()
+            }
+        },
+        containerColor = Color(0xFF1E293B),
+        titleContentColor = Color.White,
+        title = { Text("Nuevo Reporte", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Indicador de autor autenticado
+                Text(
+                    text = "Reportando como: ${usuarioActual?.nombre ?: "Usuario"} (${usuarioActual?.email ?: ""})",
+                    fontSize = 12.sp,
+                    color = Color(0xFF38BDF8),
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                // Campo Coordenadas: estrictamente bloqueado / solo lectura
+                OutlinedTextField(
+                    value = ubicacion,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Ubicación en mapa (lat,lng) [Bloqueada]") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color(0xFF38BDF8),
+                        unfocusedBorderColor = Color(0xFF475569),
+                        focusedTextColor = Color(0xFF93C5FD),
+                        unfocusedTextColor = Color(0xFF93C5FD)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = titulo,
+                    onValueChange = { titulo = it },
+                    label = { Text("Título del reporte *") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = descripcion,
+                    onValueChange = { descripcion = it },
+                    label = { Text("Descripción *") },
+                    maxLines = 3,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = direccion,
+                    onValueChange = { direccion = it },
+                    label = { Text("Dirección / Referencia *") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Selector de categoría de la base de datos
+                if (categorias.isNotEmpty()) {
+                    Text("Categoría:", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                    var catExpanded by remember { mutableStateOf(false) }
+                    ExposedDropdownMenuBox(
+                        expanded = catExpanded,
+                        onExpandedChange = { catExpanded = it }
+                    ) {
+                        val catNombre = categorias.find { it.idCategoria == selectedCategoriaId }?.nombre ?: "Seleccionar"
+                        OutlinedTextField(
+                            value = catNombre,
+                            onValueChange = {},
+                            readOnly = true,
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = catExpanded) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .menuAnchor()
+                        )
+                        ExposedDropdownMenu(
+                            expanded = catExpanded,
+                            onDismissRequest = { catExpanded = false }
+                        ) {
+                            categorias.forEach { cat ->
+                                DropdownMenuItem(
+                                    text = { Text(cat.nombre) },
+                                    onClick = {
+                                        selectedCategoriaId = cat.idCategoria
+                                        catExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // =====================================================
+                // 6. EVIDENCIA FOTOGRÁFICA (OPCIONAL)
+                // =====================================================
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Evidencia fotográfica",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "Opcional",
+                            color = Color(0xFF38BDF8),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+
+                    if (imagenSeleccionada == null) {
+                        // Estado sin imagen seleccionada: botón para abrir selector
+                        OutlinedButton(
+                            onClick = { mostrarDialogoOrigenFoto = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("btn_agregar_foto_reporte"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = Color(0xFF38BDF8)
+                            ),
+                            border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CameraAlt,
+                                contentDescription = "Agregar fotografía",
+                                modifier = Modifier.size(20.dp),
+                                tint = Color(0xFF38BDF8)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Agregar fotografía",
+                                color = Color(0xFF38BDF8),
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 14.sp
+                            )
+                        }
+
+                        Text(
+                            text = "Puedes adjuntar una imagen como evidencia",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 11.sp,
+                            lineHeight = 14.sp
+                        )
+                    } else {
+                        // Estado con imagen seleccionada: vista previa razonable y botones
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Color(0xFF0F172A))
+                                .border(1.dp, Color(0xFF334155), RoundedCornerShape(14.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AsyncImage(
+                                model = imagenSeleccionada,
+                                contentDescription = "Vista previa de evidencia fotográfica",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .testTag("vista_previa_foto_reporte"),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+
+                        // Acciones: Cambiar foto y Quitar
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { mostrarDialogoOrigenFoto = true },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(42.dp)
+                                    .testTag("btn_cambiar_foto_reporte"),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = Color(0xFF38BDF8)
+                                ),
+                                border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = Color(0xFF38BDF8)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Cambiar foto",
+                                    color = Color(0xFF38BDF8),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    imagenSeleccionada = null
+                                    uriFotoCamara = null
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(42.dp)
+                                    .testTag("btn_quitar_foto_reporte"),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = Color(0xFFF87171)
+                                ),
+                                border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.6f))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = Color(0xFFF87171)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Quitar",
+                                    color = Color(0xFFF87171),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (formError != null) {
+                    Text(
+                        text = formError ?: "",
+                        color = Color(0xFFF87171),
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val idUsuarioAutor = usuarioActual?.idUsuario
+                    if (idUsuarioAutor.isNullOrBlank()) {
+                        formError = "No se pudo identificar al usuario actual. Inicia sesión nuevamente."
+                        return@Button
+                    }
+
+                    if (titulo.isBlank() || descripcion.isBlank() || direccion.isBlank()) {
+                        formError = "Por favor completa todos los campos obligatorios."
+                        return@Button
+                    }
+
+                    val idCategoriaSeleccionada = selectedCategoriaId
+                    if (idCategoriaSeleccionada.isNullOrBlank()) {
+                        formError = if (categorias.isEmpty()) {
+                            "No se pudieron cargar las categorías."
+                        } else {
+                            "Selecciona una categoría válida."
+                        }
+                        return@Button
+                    }
+
+                    coroutineScope.launch {
+                        isSubmitting = true
+                        formError = null
+                        var tempArchivo: File? = null
+                        try {
+                            var rutaImagenSubida: String? = null
+
+                            // 1. Si el usuario seleccionó fotografía, subir primero a Laravel
+                            if (imagenSeleccionada != null) {
+                                val uri = imagenSeleccionada!!
+                                val multipartData = crearMultipartBodyPartDesdeUri(context, uri)
+                                if (multipartData == null) {
+                                    formError = "No se pudo procesar la imagen seleccionada. Inténtalo nuevamente."
+                                    isSubmitting = false
+                                    return@launch
+                                }
+                                tempArchivo = multipartData.second
+
+                                try {
+                                    Log.d("LARAVEL_UPLOAD", "Subiendo imagen a Laravel: /api/subir-imagen-reporte")
+                                    val uploadResp = LaravelApiClient.apiService.subirImagen(multipartData.first)
+                                    val uploadBody = uploadResp.body()
+
+                                    if (uploadResp.isSuccessful && uploadBody != null && uploadBody.success && !uploadBody.ruta.isNullOrBlank()) {
+                                        rutaImagenSubida = uploadBody.ruta
+                                        Log.d("LARAVEL_UPLOAD", "Imagen subida exitosamente. Ruta: $rutaImagenSubida")
+                                    } else {
+                                        Log.e("LARAVEL_UPLOAD", "Error al subir imagen: HTTP ${uploadResp.code()} - ${uploadBody?.mensaje}")
+                                        formError = "No se pudo subir la imagen. Inténtalo nuevamente."
+                                        isSubmitting = false
+                                        return@launch
+                                    }
+                                } catch (ex: Exception) {
+                                    Log.e("LARAVEL_UPLOAD", "Excepción al conectar con Laravel", ex)
+                                    formError = "No se pudo subir la imagen. Inténtalo nuevamente."
+                                    isSubmitting = false
+                                    return@launch
+                                }
+                            }
+
+                            // 2. Crear reporte en la API PHP (con imagen = rutaImagenSubida o null si no se adjuntó foto)
+                            val req = CrearReporteRequest(
+                                titulo = titulo.trim(),
+                                descripcion = descripcion.trim(),
+                                ubicacion = ubicacion.trim(),
+                                direccion = direccion.trim(),
+                                idUsuario = idUsuarioAutor,
+                                idCategoria = idCategoriaSeleccionada,
+                                imagen = rutaImagenSubida
+                            )
+                            Log.d("API_MUTATION", "POST crear_reporte.php autor: $idUsuarioAutor coords: $ubicacion imagen: $rutaImagenSubida")
+                            val resp = ApiClient.apiService.crearReporte(req)
+                            if (resp.isSuccessful && resp.body()?.success == true) {
+                                imagenSeleccionada = null
+                                uriFotoCamara = null
+                                onReporteCreado()
+                            } else {
+                                formError = resp.body()?.message ?: "Error al crear reporte: HTTP ${resp.code()}"
+                            }
+                        } catch (ex: Exception) {
+                            Log.e("API_ERROR", "Error creando reporte en mapa", ex)
+                            formError = "No se pudo conectar con el servidor."
+                        } finally {
+                            tempArchivo?.delete()
+                            isSubmitting = false
+                        }
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
+                enabled = !isSubmitting
+            ) {
+                if (isSubmitting) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Creando...", color = Color.White)
+                } else {
+                    Text("Crear Reporte", color = Color.White)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    imagenSeleccionada = null
+                    uriFotoCamara = null
+                    onDismiss()
+                },
+                enabled = !isSubmitting
+            ) {
+                Text("Cancelar", color = Color(0xFF94A3B8))
+            }
+        }
+    )
+
+    // Diálogo para seleccionar el origen de la fotografía (Tomar foto / Elegir de galería)
+    if (mostrarDialogoOrigenFoto) {
+        AlertDialog(
+            onDismissRequest = { mostrarDialogoOrigenFoto = false },
+            containerColor = Color(0xFF1E293B),
+            titleContentColor = Color.White,
+            title = {
+                Text(
+                    text = "Seleccionar fotografía",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Elige de dónde deseas obtener la evidencia fotográfica:",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 13.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // 1. Tomar foto
+                    Card(
+                        onClick = {
+                            mostrarDialogoOrigenFoto = false
+                            prepararCapturaFoto()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("opcion_tomar_foto"),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                        border = BorderStroke(1.dp, Color(0xFF334155)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF0284C7).copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CameraAlt,
+                                    contentDescription = "Tomar foto",
+                                    tint = Color(0xFF38BDF8),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column {
+                                Text(
+                                    text = "Tomar foto",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 15.sp
+                                )
+                                Text(
+                                    text = "Abrir la cámara del dispositivo",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+
+                    // 2. Elegir de galería
+                    Card(
+                        onClick = {
+                            mostrarDialogoOrigenFoto = false
+                            imagePickerLauncher.launch("image/*")
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("opcion_elegir_galeria"),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                        border = BorderStroke(1.dp, Color(0xFF334155)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF0D9488).copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PhotoLibrary,
+                                    contentDescription = "Elegir de galería",
+                                    tint = Color(0xFF2DD4BF),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column {
+                                Text(
+                                    text = "Elegir de galería",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 15.sp
+                                )
+                                Text(
+                                    text = "Seleccionar de fotos guardadas",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(
+                    onClick = { mostrarDialogoOrigenFoto = false }
+                ) {
+                    Text("Cancelar", color = Color(0xFF94A3B8))
+                }
+            }
+        )
+    }
+}
+
+// Función auxiliar para preparar un archivo temporal en cacheDir y generar MultipartBody.Part desde un Uri
+private fun crearMultipartBodyPartDesdeUri(
+    context: Context,
+    uri: Uri,
+    partName: String = "imagen"
+): Pair<MultipartBody.Part, File>? {
+    val contentResolver = context.contentResolver
+    val mimeType = contentResolver.getType(uri) ?: "image/jpeg"
+    val extension = when {
+        mimeType.contains("png", ignoreCase = true) -> ".png"
+        mimeType.contains("webp", ignoreCase = true) -> ".webp"
+        mimeType.contains("gif", ignoreCase = true) -> ".gif"
+        else -> ".jpg"
+    }
+
+    val fileName = "imagen_reporte_${System.currentTimeMillis()}$extension"
+    val tempFile = File(context.cacheDir, fileName)
+
+    return try {
+        contentResolver.openInputStream(uri)?.use { inputStream ->
+            FileOutputStream(tempFile).use { outputStream ->
+                inputStream.copyTo(outputStream)
+            }
+        } ?: return null
+
+        val mediaType = mimeType.toMediaTypeOrNull() ?: "image/*".toMediaTypeOrNull()
+        val requestBody = tempFile.asRequestBody(mediaType)
+        Pair(MultipartBody.Part.createFormData(partName, fileName, requestBody), tempFile)
+    } catch (e: Exception) {
+        Log.e("IMAGEN_MULTIPART", "Error preparando MultipartBody.Part desde Uri", e)
+        tempFile.delete()
+        null
+    }
+}
+
+// Función auxiliar para dibujar los marcadores de reportes reales con sus colores según estado
+private fun actualizarMarcadoresEnMapa(
+    context: Context,
+    mapView: MapView?,
+    reportes: List<Reporte>,
+    puntoTemporal: GeoPoint?,
+    modoSeleccion: Boolean,
+    onReporteClick: (Reporte) -> Unit
+) {
+    if (mapView == null) return
+
+    // Conservar el primer overlay de eventos y limpiar los demás
+    val eventOverlay = mapView.overlays.filterIsInstance<MapEventsOverlay>().firstOrNull()
+    mapView.overlays.clear()
+    if (eventOverlay != null) {
+        mapView.overlays.add(eventOverlay)
+    }
+
+    // 1. Agregar marcadores de reportes reales clasificados por color
+    reportes.forEach { reporte ->
+        val ubicacion = reporte.ubicacion
+        if (!ubicacion.isNullOrBlank()) {
+            val partes = ubicacion.split(",")
+            if (partes.size >= 2) {
+                val lat = partes[0].trim().toDoubleOrNull()
+                val lng = partes[1].trim().toDoubleOrNull()
+                if (lat != null && lng != null) {
+                    val marker = Marker(mapView)
+                    marker.position = GeoPoint(lat, lng)
+
+                    // Selección del color según el estado del reporte
+                    // Pendiente -> Rojo
+                    // En Proceso -> Amarillo
+                    // Solucionado -> Verde
+                    val drawableRes = when (reporte.estado.trim().lowercase()) {
+                        "pendiente" -> R.drawable.ic_pin_rojo
+                        "en proceso" -> R.drawable.ic_pin_amarillo
+                        "solucionado" -> R.drawable.ic_pin_verde
+                        else -> R.drawable.ic_pin_rojo
+                    }
+
+                    val pinDrawable = ContextCompat.getDrawable(context, drawableRes)
+                    marker.icon = pinDrawable
+                    marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+
+                    marker.title = reporte.titulo
+                    marker.subDescription = "Categoría: ${reporte.categoria ?: "N/A"}\nEstado: ${reporte.estado}\nDirección: ${reporte.direccion ?: "N/A"}"
+
+                    marker.setOnMarkerClickListener { _, _ ->
+                        if (!modoSeleccion) {
+                            onReporteClick(reporte)
+                        }
+                        true
+                    }
+
+                    mapView.overlays.add(marker)
+                }
+            }
+        }
+    }
+
+    // 2. Agregar marcador temporal de selección si existe (Azul distintivo)
+    if (puntoTemporal != null) {
+        val tempMarker = Marker(mapView)
+        tempMarker.position = puntoTemporal
+        tempMarker.icon = ContextCompat.getDrawable(context, R.drawable.ic_pin_seleccion)
+        tempMarker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+        tempMarker.title = "Ubicación fijada"
+        mapView.overlays.add(tempMarker)
+    }
+
+    mapView.invalidate()
+}
