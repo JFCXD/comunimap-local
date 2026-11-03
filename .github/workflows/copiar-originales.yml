@@ -1,0 +1,44 @@
+name: Preparar copia local de ComuniMap
+
+on:
+  push:
+    paths:
+      - ".github/workflows/copiar-originales.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  copiar-proyectos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Descargar solo comunimap-local con permiso de escritura
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Copiar web, API y Android desde los repositorios originales
+        run: bash scripts/copiar-originales.sh
+
+      - name: Comprobar carpetas esenciales
+        run: |
+          test -f web/artisan
+          test -f web/composer.json
+          test -f api/login.php
+          test -f android/app/build.gradle.kts
+          echo "Archivos principales encontrados."
+
+      - name: Publicar únicamente en comunimap-local
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- web api android
+          if git diff --cached --quiet; then
+            echo "El contenido ya está actualizado."
+          else
+            git commit -m "Copiar fuentes completas de Laravel, API y Android"
+            git push origin HEAD:main
+          fi
