@@ -20,6 +20,7 @@ jobs:
           fetch-depth: 1
 
       - name: Aplicar paquete subido
+        if: ${{ hashFiles('actualizacion_comunimap_local.zip') != '' }}
         run: |
           set -Eeuo pipefail
           if [ ! -f actualizacion_comunimap_local.zip ]; then
@@ -47,6 +48,7 @@ jobs:
           rm -f actualizacion_comunimap_local.zip
 
       - name: Verificar y publicar solo en comunimap-local
+        if: ${{ hashFiles('actualizacion_comunimap_local.zip') != '' }}
         run: |
           set -Eeuo pipefail
           if [ -f actualizacion_comunimap_local.zip ]; then
